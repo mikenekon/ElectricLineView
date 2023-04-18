@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>電気力線表示</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+  <style>
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+
+    canvas {
+      border: 1px solid black;
+    }
+  </style>
+</head>
+<body>
+  <div id="sketch-container"></div>
+
+  <script>
+    const charges = [];
+    const chargeOptions = Array.from({ length: 11 }, (_, i) => i - 5);
+    let width = 1024;
+    let height = 768;
+
+    let chargeSelect;
+    let showEFieldButton;
+    let showEquipotentialButton;
+    let eFieldVisible = false;
+    let equipotentialVisible = false;
+    let selectedChargeIndex = null; // 追加
+    let potentialGrid; // ポテンシャルを格納する二次元配列
+
+    const e0 = 	8.8541878128e-12;
+    const k = 1/(4*Math.PI*e0);  // k=8.99×109[N⋅m2/C2] クーロン定数
+    const e = 1.60e-19;  // 電気素量 1.6e-19[c]
+    const n = 1;    //　電荷量１を電気素量の何倍にするかの定数   q = ne   , V = kq/r = kne/r
+    const lorder= 1e-10;  //  距離のオーダー　[m] 
+    const equipotentialSpacing = 5; // ポテンシャルのメッシュサイズ
+
+    // 画面設定
+    function setup() {
+      const canvas = createCanvas(width, height);
+   
+      canvas.parent("sketch-container");
+      
+      chargeSelect = createSelect();
+      chargeOptions.forEach((charge) => chargeSelect.option(charge));
+      chargeSelect.parent("sketch-container");
+
+      showEFieldButton = createButton("電気力線を表示");
+      showEFieldButton.mousePressed(() => {
+        eFieldVisible = !eFieldVisible;
+        redraw();
+      });
+      showEFieldButton.parent("sketch-container");
+
+      showEquipotentialButton = createButton("等電位線を表示");
+      showEquipotentialButton.mousePressed(() => {
+        equipotentialVisible = !equipotentialVisible;
+        redraw();
+      });
+      showEquipotentialButton.parent("sketch-container");
+
+      clearChargesButton = createButton("電荷を削除");
+      clearChargesButton.mousePressed(() => {
+        charges.length = 0;
+        redraw();
+      });
+      clearChargesButton.parent("sketch-container");      
+    }
+
+    let bDrawAllFlag = true;  // 再計算描画フラグ
+    
+    // 描画
+    function draw() {
+      if( bDrawAllFlag == true ){
+          background(255); // いったんクリア
+    
+        if (equipotentialVisible) {
+          // Potential計算
+          const { potentialGrid, maxPotential, minPotential } = calculatePotentialGrid();
+          drawEquipotentialColors(potentialGrid, maxPotential, minPotential);
+          drawColorLabels(maxPotential, minPotential);
+               
+        }
+  
+        if (eFieldVisible) {
+          drawElectricField();
+        }
+  
+        drawCharges(); // 変更    
+        bDrawAllFlag = false;
+      }  
+      
+
+      // マウスカーソルの位置を表示
+      drawMousePosition();
+    
+      // マウスカーソル位置の電位情報を表示
+     drawMousePotentialInfo();
+          
+    //  noLoop();
+          
+
+    }
+
+
+   
+    function drawMousePotentialInfo() {
+      const gridX = Math.floor(mouseX / equipotentialSpacing);
+      const gridY = Math.floor(mouseY / equipotentialSpacing);
+    
+      if (
+        potentialGrid &&
+        gridY >= 0 &&
+        gridY < potentialGrid.length &&
+        gridX >= 0 &&
+        gridX < potentialGrid[gridY].length
+      ) {
+        const potential = potentialGrid[gridY][gridX];
+
+        textSize(16);
+        textAlign(LEFT, TOP);
+        noStroke();
+        fill(255);
+        rect(10, 80, textWidth('Potential: ${potential.toFixed(2)} V'), textAscent() + textDescent()); // 四角形を描画する
+        fill(0);        
+        text(
+          `Potential: ${potential.toFixed(2)} V`, 10, 80
+        );
+      }
+    }
+    
+    function drawMousePosition() {
+      textSize(16);
+      textAlign(LEFT, TOP);
+      noStroke();
+      fill(255);
+      rect(10, 20, textWidth(`x: ${mouseX.toFixed(2)}, y: ${mouseY.toFixed(2)}`), textAscent() + textDescent()); // 四角形を描画する
+      fill(0);
+      text(`x: ${mouseX.toFixed(2)}, y: ${mouseY.toFixed(2)}`,  10, 20);
+    }
+        
+    // 左クリックで電荷を追加
+    function mousePressed() {
+      if (mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
+        // 既存の電荷を選択
+        selectedChargeIndex = charges.findIndex((charge) =>
+          dist(mouseX, mouseY, charge.x, charge.y) < 10
+        );
+    
+        if (selectedChargeIndex === -1) {
+          // 新しい電荷を追加
+          charges.push({
+            x: mouseX,
+            y: mouseY,
+            q: parseInt(chargeSelect.value()),
+          });
+        }
+      }
+      bDrawAllFlag = true;
+      redraw(); // 追加
+    }
+    
+    function mouseReleased() {
+      // 選択された電荷をリリース
+      selectedChargeIndex = null;
+      redraw();
+    }
+
+    // ドラッグで電荷を移動
+    function mouseDragged() {
+      // 選択された電荷をドラッグ
+      if (selectedChargeIndex !== null) {
+        charges[selectedChargeIndex].x = mouseX;
+        charges[selectedChargeIndex].y = mouseY;
+      }
+      bDrawAllFlag = true;
+      redraw();
+    }
+
+    // ダブルクリックで電荷を削除
+    function doubleClicked() {
+      if (mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
+        const chargeIndex = charges.findIndex((charge) =>
+          dist(mouseX, mouseY, charge.x, charge.y) < 10
+        );
+    
+        if (chargeIndex !== -1) {
+          charges.splice(chargeIndex, 1);
+        }
+      }
+      bDrawAllFlag = true;
+      redraw();
+    }
+     
+
+    // 電荷を描画する
+    function drawCharges() {
+      const r = 10;
+      colorMode(RGB);
+      
+      charges.forEach((charge) => {
+        // 色を分ける
+        if (charge.q > 0) {
+          fill(255, 0, 0 , 50 ); // プラス電荷: 赤
+        } else {
+          fill(0, 0, 255 , 50 ); // マイナス電荷: 青
+        }
+
+        const r2 = Math.abs(charge.q) * r;
+        
+        ellipse(charge.x, charge.y, r2, r2);
+      });
+    }
+    
+
+
+    function getNearestLineIndex(charge, x, y) {
+      const numLines = Math.abs(charge.q) * 8;
+      const angleIncrement = 360 / numLines;
+      const initialDistance = 15;
+      let minAngleDiff = Infinity;
+      let nearestLineIndex = -1;
+    
+      const targetAngle = degrees(atan2(y - charge.y, x - charge.x));
+    
+      for (let angle = 0, lineIndex = 0; angle < 360; angle += angleIncrement, lineIndex++) {
+        const angleDiff = abs(targetAngle - angle) % 360;
+        const minAngle = min(angleDiff, 360 - angleDiff);
+    
+        if (minAngle < minAngleDiff) {
+          minAngleDiff = minAngle;
+          nearestLineIndex = lineIndex;
+        }
+      }
+    
+      return nearestLineIndex;
+    }
+    
+    // 電荷からでる電気力線の他の電荷からの接続情報（二次元配列）
+    let connectedLinesPerCharge = [];
+    
+    function drawElectricField() {
+      colorMode(RGB);
+      
+      stroke(0);
+      connectedLinesPerCharge = charges.map(charge =>
+        Array(Math.abs(charge.q) * 8).fill(null).map(() => ({ x: null, y: null }))
+      );
+    
+      // 電荷から見てループする。
+      charges.forEach((charge, chargeIndex) => {
+        const numLines = Math.abs(charge.q) * 8;
+        const angleIncrement = 360 / numLines;
+        const initialDistance = 15;
+        const stepSize = 5;
+        const maxSteps = 1000;
+    
+        // 色を分ける
+        if (charge.q > 0) {
+          stroke(255, 0, 0);
+        } else {
+          stroke(0, 0, 255);
+        }
+    
+        for (let angle = 0, lineIndex = 0; angle < 360; angle += angleIncrement, lineIndex++) {
+          let x1 = charge.x + initialDistance * cos(radians(angle));
+          let y1 = charge.y + initialDistance * sin(radians(angle));
+    
+          // 他の電荷から同じところに既に接続されている場合は描画しない
+          if(connectedLinesPerCharge[chargeIndex][lineIndex].x != null && 
+             connectedLinesPerCharge[chargeIndex][lineIndex].y != null){
+            continue;
+          }
+          
+          let shouldTerminateLine = false;
+    
+          for (let step = 0; step < maxSteps && !shouldTerminateLine; step++) {
+            const eFieldVector = calculateEFieldVectorAt(x1, y1);
+            let x2, y2;
+    
+            if (charge.q > 0) {
+              x2 = x1 + stepSize * eFieldVector.x;
+              y2 = y1 + stepSize * eFieldVector.y;
+            } else {
+              x2 = x1 - stepSize * eFieldVector.x;
+              y2 = y1 - stepSize * eFieldVector.y;
+            }
+    
+            // 画面内のみ描画する
+            if( x2 < 0 || x2 > width || y1 > height || y1 < 0){
+              break;
+            }
+            
+            line(x1, y1, x2, y2);
+    
+            // 別の電荷に接続されるか？をチェック。接続される場合はどこに接続するかを格納
+            charges.forEach((otherCharge, otherChargeIndex) => {
+              if( chargeIndex != otherChargeIndex && dist(otherCharge.x ,otherCharge.y , x2 , y2) < initialDistance ){
+                  shouldTerminateLine = true;
+                const otherLineIndex = getNearestLineIndex(otherCharge, x2, y2);
+                  connectedLinesPerCharge[otherChargeIndex][otherLineIndex] = { x: x2, y: y2 };
+    
+              }
+            });
+    
+            x1 = x2;
+            y1 = y2;
+          }
+        }
+      });
+    }
+        
+
+    // x,y座標における電界の方向を返す。
+    // 正規化しているので大きさは意味がないので注意
+    function calculateEFieldVectorAt(x, y) {
+      let eFieldVector = createVector(0, 0);
+    
+      charges.forEach((charge) => {
+        const distanceVector = createVector( lorder*(x - charge.x), lorder*(y - charge.y));
+        const distance = distanceVector.mag();
+//        const force = k * charge.q / (distance * distance);
+        const force = k * n * charge.q * e / (distance * distance);
+        const forceVector = distanceVector.normalize().mult(force);
+    
+        eFieldVector.add(forceVector);
+      });
+    
+      eFieldVector.normalize(); // 正規化
+      return eFieldVector;
+    }
+    
+
+    function drawEquipotentialLines() {
+      const maxPotential = 1500;
+      const minPotential = -1500;
+      const alpha = 100;
+
+      colorMode(HSB, 100); // カラーモードをHSBに設定
+      
+      for (let y = 0; y < height; y += equipotentialSpacing) {
+        for (let x = 0; x < width; x += equipotentialSpacing) {
+          const potential = calculatePotentialAt(x, y);
+    
+          if (potential > 0) {
+            // 青から透明にグラデーション
+            const blue = map(potential, 0, maxPotential, 255, 0);
+            fill(0, 0, blue, alpha);
+          } else {
+            // 赤から透明にグラデーション
+            const red = map(potential, 0, minPotential, 0, 255);
+            fill(red, 0, 0, alpha);
+          }
+          noStroke();   // 境界線なし 
+          rect(x, y, equipotentialSpacing, equipotentialSpacing);
+        }
+      }
+    }
+
+    // 指定の場所のポテンシャルを計算
+    function calculatePotentialAt(x, y) {
+      let potential = 0;
+
+      charges.forEach((charge) => {
+        const distance = dist(x, y, charge.x, charge.y) * lorder;
+        potential += (k * n * charge.q * e ) / distance;
+      });
+
+      return potential;
+    }
+
+
+    function calculatePotentialGrid() {
+      potentialGrid = [];
+      let maxPotential = -Infinity;
+      let minPotential = Infinity;
+    
+      for (let y = 0; y < height; y += equipotentialSpacing) {
+        const row = [];
+        for (let x = 0; x < width; x += equipotentialSpacing) {
+          const potential = calculatePotentialAt(x, y);
+//          const potential = 0.001*y + 0.001*x;   // デバッグ用のテスト処理
+          row.push(potential);
+    
+          maxPotential = Math.max(maxPotential, potential);
+          minPotential = Math.min(minPotential, potential);
+        }
+        potentialGrid.push(row);
+      }
+      return { potentialGrid, maxPotential, minPotential };
+    }
+
+
+    
+    function getColorFromPotential(potential, maxPotential, minPotential) {
+      const normalizedPotential = (potential - minPotential) / (maxPotential - minPotential);
+      //const hue = round(normalizedPotential * 300); // 0 to 360
+      // const hue = lerp(360, 0, normalizedPotential);
+      // 160-360
+      const hue = round(lerp(250, 300, normalizedPotential));
+      
+      
+      const col = "hsb(" + hue + ", 100%, 100%)";
+//      const col = color('hsb(' + hue + ', 100%, 100%)'); 
+      return col;
+    }
+
+    function drawColorLabels(maxPotential, minPotential) {
+
+      const numLabels = 11;
+      const labelWidth = 10;
+      const labelHeight = height / (numLabels - 1) / 3;
+
+      colorMode(HSB, 100); // カラーモードをHSBに設定
+      
+      for (let i = 0; i < numLabels; i++) {
+        const ratio = i / (numLabels - 1);
+//        const potential = lerp(minPotential, maxPotential, ratio);
+        const potential = lerp(maxPotential, minPotential, ratio);
+        const labelColor = getColorFromPotential(potential, maxPotential, minPotential);
+    
+        fill(labelColor);
+        noStroke();
+        rect(width - labelWidth, i * labelHeight, labelWidth, labelHeight);
+    
+        fill(0);
+        textAlign(RIGHT, CENTER);
+        textSize(12);
+        text(nf(potential, 2, 3), width - labelWidth - 5, i * labelHeight + labelHeight / 2);
+//        text(potential, width - labelWidth - 5, i * labelHeight + labelHeight / 2);
+      }
+    }
+    
+    
+    function drawEquipotentialColors(potentialGrid, maxPotential, minPotential) {
+      colorMode(HSB, 100); // カラーモードをHSBに設定
+
+      
+      for (let y = 0; y < potentialGrid.length; y++) {
+        for (let x = 0; x < potentialGrid[y].length; x++) {
+          const potential = potentialGrid[y][x];
+          const cellColor = getColorFromPotential(potential, maxPotential, minPotential);
+          
+          fill(cellColor);
+//          noStroke();
+          rect(x * equipotentialSpacing, y * equipotentialSpacing, equipotentialSpacing, equipotentialSpacing);
+        }
+      }
+    }
+    
+    
+        
+  </script>
+</body>
+</html>
